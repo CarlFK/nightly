@@ -1,0 +1,35 @@
+# Directory where images will be exported
+#EXPORT_DIR=
+
+# Release for spindle and firmware
+#RELEASE=
+
+# Extra stage to export
+#EXTRA_STAGE=
+
+# Extra stage tag (added to filenames)
+#EXTRA_TAG=
+
+# Whether to prepare NOOBS archives (passed to spindle)
+#NOOBS=
+
+# Reprepro directory
+#REPO_DIR=
+# Directory for pool and dists
+#REPO_EXPORT=
+
+# Added to sources list while spindle runs
+#NIGHTLY_REPO=
+
+# Component to export to and install from
+#NIGHTLY_COMP=
+
+# Public signing key for the nightly repo
+#NIGHTLY_PUBKEY=
+
+# Signing key for the repo and exported files
+#KEY=
+
+# Where to send the log
+#TO_EMAIL=
+#FROM_EMAIL=

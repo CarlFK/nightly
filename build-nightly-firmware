@@ -1,0 +1,83 @@
+#!/bin/bash -xev
+{
+flock 200
+
+#!/bin/bash -xev
+
+. config
+
+KEY=${KEY:-"unset"}
+REPO_DIR=${REPO_DIR:-"unset"}
+REPO_EXPORT=${REPO_EXPORT:-"unset"}
+RELEASE=${RELEASE:-"wheezy"}
+
+NIGHTLY_REPO=${NIGHTLY_REPO=:-"unset"}
+NIGHTLY_COMP=${NIGHTLY_COMP=:-"unset"}
+
+BASEDIR=`pwd`
+
+if [ ! -d firmwarebase ]; then
+	git clone https://github.com/RPi-Distro/firmware.git firmwarebase
+fi
+
+if [ ! -d firmware ]; then
+	git clone --reference firmwarebase https://github.com/RPi-Distro/firmware.git firmware
+	cd firmware
+	git remote add upstream https://github.com/raspberrypi/firmware.git
+	cd ../
+fi
+
+cd firmware
+git fetch --all
+
+FOUNDATIONHEAD=`git rev-parse upstream/master`
+git config user.email "rpf@autonightly.invalid"
+git config user.name "rpf automated nightly builder"
+export DEBEMAIL="rpf automated nightly builder <rpf@autonightly.invalid>"
+COMMITDATE=$(date -d @`git show -s --format=%ct upstream/master` -u +%Y%m%d~%H%M%S)
+DEBVERSION=1.${COMMITDATE}-1
+
+# Sanity check, commit datetime must be lower than current datetime
+DATENOW=$(date -u +%Y%m%d~%H%M%S)
+dpkg --compare-versions $COMMITDATE le $DATENOW
+
+if [[ "`dpkg-parsechangelog --show-field Version`" = "${DEBVERSION}" ]]; then
+	echo Package already built
+	exit 0
+fi
+
+# Merge latest firmware
+git merge --no-edit upstream/master
+
+# Add changelog entry
+dch -v ${DEBVERSION} -D "stable" -u "low" -p "Firmware as of ${FOUNDATIONHEAD}"
+
+# Regen postinst script
+cd debian
+./gen_bootloader_postinst_preinst.sh
+cd ../
+
+git commit -a -m "Bump to ${FOUNDATIONHEAD}"
+# Build package
+git-buildpackage --git-upstream-tree=upstream/master --git-debian-branch=debian -aarmhf -uc -us -b
+#git-buildpackage --git-upstream-tree=upstream/master --git-debian-branch=debian -aarmel -uc -us -b
+
+# Add to repo
+if [[ ${REPO_DIR} != "unset" ]]; then
+	DIR=`pwd`
+	cd ${REPO_DIR}
+	for change in ${DIR}/../build-area/raspberrypi-firmware_${DEBVERSION}*.changes; do
+		if [[ ${KEY} != "unset" ]]; then
+			debsign -k${KEY} ${change}
+		fi
+		reprepro -C ${NIGHTLY_COMP} --ignore=wrongdistribution include ${RELEASE} ${change}
+		# Keep the changes file as well, it's useful for manual downgrades
+		cp ${change} pool/${NIGHTLY_COMP}/r/raspberrypi-firmware
+		if [[ ${REPO_EXPORT} != "unset" ]]; then
+			rsync -av  pool dists ${REPO_EXPORT}/
+		fi
+		dcmd rm ${change}
+	done
+fi
+
+} 200>firmwarelock

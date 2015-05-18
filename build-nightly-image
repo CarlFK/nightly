@@ -1,37 +1,101 @@
-#!/bin/bash -ev
+#!/bin/bash -xv
+. config
 
-IMAGEDATE=$(date -u +%Y%m%d-%H%M%S)
+export NOOBS=${NOOBS:-"unset"}
 
-#wrap the bulk of the script in a function so we can log the output
-main ()
-{
-	./build-nightly-bootloader-package
-	./cleanup-old-images.py
+RELEASE=${RELEASE:-"wheezy"}
+TO_EMAIL=${TO_EMAIL:-"unset"}
+FROM_EMAIL=${FROM_EMAIL:-"unset"}
+KEY=${KEY:-"unset"}
+
+IMAGEDATE=$(date -u +%Y%m%d)
+SUFFIX=${IMAGEDATE}-raspbian-${RELEASE}
+IMAGEVER=${IMAGEVER:-1}
+EXTRA_STAGE=${EXTRA_STAGE=:-"unset"}
+EXTRA_TAG=${EXTRA_TAG=:-"extra"}
+EXPORT_DIR=${EXPORT_DIR=:-"unset"}
+
+NIGHTLY_REPO=${NIGHTLY_REPO=:-"unset"}
+NIGHTLY_COMP=${NIGHTLY_COMP=:-"unset"}
+
+CHECK_LOC=${EXPORT_DIR:-"unset"}
+
+while [ -d ${CHECK_LOC}/${SUFFIX}-${IMAGEVER} ] || [ -d ${SUFFIX}-${IMAGEVER} ]; do
+	let IMAGEVER=IMAGEVER+1
+done
+
+OUTDIR=${SUFFIX}-${IMAGEVER}
+LOGNAME=${OUTDIR}.log
+IMAGENAME="${SUFFIX}.img"
+
+export_stage() {
+	./helper export_image_for_release out/`sed "s/$/.qed/;s/${RELEASE}-//;" <<< ${1}` ${SUFFIX}${2}.img
+	zip ../${OUTDIR}/${OUTDIR}${2}.zip ${SUFFIX}${2}.img
+	if [ -d noobs ]; then
+		tar -C noobs -cpf ../${OUTDIR}/${OUTDIR}-NOOBS${2}.tar .
+	fi
+	tar -C out/`sed "s/$/.qed.fingerprint/;s/${RELEASE}-//;" <<< ${1}`\
+	 -cpf ../${OUTDIR}/${OUTDIR}-fingerprint${2}.tar .
+	if [[ ${KEY} != "unset" ]]; then
+		gpg -u ${KEY} --output ../${OUTDIR}/${OUTDIR}${2}.zip.sig \
+		 --detach-sign ../${OUTDIR}/${OUTDIR}${2}.zip
+	fi
+	rm ${SUFFIX}${2}.img
+}
+
+main() {
+	set -o errexit
+	sudo modprobe nbd max_part=16
+
+	rm -rf spindle
+	if [ ! -d spindlebase ]; then
+		git clone https://github.com/RPi-Distro/spindle.git spindlebase
+	fi
 	cd spindlebase
 	git fetch
 	cd ..
+
 	rm -rf spindle
-	git clone --reference spindlebase https://github.com/asb/spindle spindle
-	cp -al spindlework spindle/work
+	git clone --reference spindlebase https://github.com/RPi-Distro/spindle.git spindle
+	if [ -d spindlework ]; then
+		cp -al spindlework spindle/work
+	fi
+
+	if [[ ${NIGHTLY_REPO} != "unset" ]] && [[ ${NIGHTLY_COMP} != "unset" ]] && [[ ${NIGHTLY_PUBKEY} != "unset" ]]; then
+		./build-nightly-firmware
+		sed "s|COMPONENT|${NIGHTLY_COMP}|;s|MIRROR|${NIGHTLY_REPO}|;s|RELEASE|${RELEASE}|;s|KEY_ID|${KEY}|" \
+			< spindle-use-nightly-firmware.diff | patch -p1 -d spindle/
+		sed "s|PUBKEY_MARKER|${NIGHTLY_PUBKEY}|" -i spindle/wheezy-stage2
+	fi
+
 	cd spindle
-	patch -p1 < ../spindle-recent-qemu.diff
-	patch -p1 < ../spindle-use-nightly-firmware.diff
-	patch -p1 < ../spindle-cleanup-after-exporting-image.diff
-	patch -p1 < ../spindle-raspbian-mirror.diff
-	
-	sudo modprobe nbd max_part=16
-	./wheezy-stage0
-	./wheezy-stage1
-	./wheezy-stage2
-	./wheezy-stage3
-	./wheezy-stage4-lxde
-	./wheezy-stage4-lxde-edu
-	./helper export_image_for_release out/stage4-lxde-edu.qed nightly.img
-	xz -9 nightly.img
-	mv nightly.img.xz /usr/share/nginx/www/nightlyimages/rpf-raspbian-nightly-$IMAGEDATE.img.xz
-	cd /usr/share/nginx/www/nightlyimages/
-	gpg -u 5EE21256 --output rpf-raspbian-nightly-$IMAGEDATE.img.xz.sig --detach-sign rpf-raspbian-nightly-$IMAGEDATE.img.xz
+	for CURSTAGE in ${RELEASE}-stage*; do
+		./${CURSTAGE}
+	done
+
+	export_stage ${CURSTAGE}
+	if [[ ${EXTRA_STAGE} != "unset" ]]; then
+		export_stage ${EXTRA_STAGE} -${EXTRA_TAG}
+	fi
+
+	cd ..
+	if [ ! -d spindlework ]; then
+		mv spindle/work spindlework
+	fi
 }
 
-#log output
-main "$@" 2>&1 | tee /usr/share/nginx/www/nightlyimages/rpf-raspbian-nightly-$IMAGEDATE.log
+mkdir ${OUTDIR}
+main 2>&1 | tee ${OUTDIR}/${LOGNAME}
+if [[ ${FROM_EMAIL} != "unset" ]] && [[ ${TO_EMAIL} != "unset" ]]; then
+	cat << EOF | /usr/sbin/sendmail -t
+To: ${TO_EMAIL}
+Subject: ${LOGNAME}
+From: ${FROM_EMAIL}
+`date`
+`cat ${OUTDIR}/${LOGNAME}`
+EOF
+fi
+
+if [[ ${EXPORT_DIR} != "unset" ]]; then
+	mv ${OUTDIR} ${EXPORT_DIR}/
+fi
